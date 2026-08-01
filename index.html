@@ -79,11 +79,11 @@
     <div class="row">
       <div style="flex:1; min-width:150px;">
         <label>Chunk size (bytes)</label>
-        <input type="number" id="chunkSize" value="900" min="200" max="1800">
+        <input type="number" id="chunkSize" value="400" min="100" max="1800">
       </div>
       <div style="flex:1; min-width:150px;">
         <label>Frame delay (ms)</label>
-        <input type="number" id="frameDelay" value="180" min="80" max="1000">
+        <input type="number" id="frameDelay" value="500" min="80" max="2000">
       </div>
       <div style="flex:1; min-width:200px;">
         <label>Optional passphrase (AES encryption)</label>
@@ -118,6 +118,7 @@
     <div class="stat" id="rxStat">Idle</div>
     <div id="downloadArea" class="stat"></div>
     <div class="hint">Requires camera permission and a secure context (https, or localhost). Hold the phone steady, ~20–30cm from the screen, until the progress bar fills.</div>
+    <div id="rxLog" style="background:#0d0f14; padding:10px; border-radius:8px; font-family:monospace; font-size:11px; height:140px; overflow-y:auto; white-space:pre-wrap; margin-top:10px;"></div>
   </div>
 </div>
 
@@ -152,6 +153,15 @@ async function deriveKey(passphrase, salt){
     {name:'PBKDF2', salt, iterations:150000, hash:'SHA-256'},
     keyMaterial, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']
   );
+}
+
+function rxLog(msg){
+  const l = document.getElementById('rxLog');
+  if(!l) return;
+  const time = new Date().toLocaleTimeString();
+  l.textContent += `[${time}] ${msg}\n`;
+  l.scrollTop = l.scrollHeight;
+  console.log('[RX] ' + msg);
 }
 
 // ---------- SENDER ----------
@@ -256,12 +266,16 @@ async function startReceiving(){
   document.getElementById('startReceive').disabled = true;
   document.getElementById('stopReceive').disabled = false;
   document.getElementById('rxStat').textContent = 'Scanning...';
+  document.getElementById('rxLog').textContent = '';
+  rxLog('Camera acquired, video ' + video.videoWidth + 'x' + video.videoHeight);
   rxChunks = new Map();
   rxMeta = null;
   document.getElementById('downloadArea').innerHTML = '';
   document.getElementById('rxProgress').style.width = '0%';
 
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  let frameCount = 0;
+  let lastFrameLoggedAt = Date.now();
 
   function tick(){
     if(video.readyState === video.HAVE_ENOUGH_DATA){
@@ -270,6 +284,11 @@ async function startReceiving(){
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const code = jsQR(imageData.data, imageData.width, imageData.height);
+      frameCount++;
+      if(Date.now() - lastFrameLoggedAt > 2000){
+        rxLog(`scanning... (${frameCount} frames so far, ${rxChunks.size}/${rxMeta ? rxMeta.n : '?'} chunks, res ${canvas.width}x${canvas.height})`);
+        lastFrameLoggedAt = Date.now();
+      }
       if(code){
         handleDecoded(code.data);
       }
@@ -281,16 +300,23 @@ async function startReceiving(){
 
 async function handleDecoded(text){
   const sep = text.indexOf('|');
-  if(sep === -1) return;
+  if(sep === -1){ rxLog('decoded a frame but no "|" separator found - not a file-transfer QR'); return; }
   let meta;
-  try{ meta = JSON.parse(text.slice(0, sep)); }catch(e){ return; }
+  try{ meta = JSON.parse(text.slice(0, sep)); }catch(e){ rxLog('decoded a frame but header JSON failed to parse'); return; }
   const b64 = text.slice(sep+1);
 
-  if(!rxMeta) rxMeta = meta;
-  if(rxMeta.id !== meta.id) return; // ignore frames from a different transfer
+  if(!rxMeta){
+    rxMeta = meta;
+    rxLog(`locked onto transfer id=${meta.id}, ${meta.n} total chunks, file="${meta.name}"`);
+  }
+  if(rxMeta.id !== meta.id){
+    rxLog(`ignoring frame from a different transfer id (${meta.id})`);
+    return;
+  }
 
   if(!rxChunks.has(meta.i)){
     rxChunks.set(meta.i, b64ToU8(b64));
+    rxLog(`got chunk ${meta.i} (${rxChunks.size}/${meta.n})`);
   }
 
   const pct = Math.round((rxChunks.size / meta.n) * 100);
