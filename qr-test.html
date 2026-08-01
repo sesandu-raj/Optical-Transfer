@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QR Test — Static Text</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<style>
+  body{font-family:-apple-system,sans-serif; background:#0f1115; color:#e7e9ee; padding:20px;}
+  .panel{background:#171a21; border:1px solid #262b36; border-radius:12px; padding:16px; margin-bottom:16px; max-width:480px;}
+  input,textarea{width:100%; padding:8px; border-radius:6px; border:1px solid #262b36; background:#0d0f14; color:#fff; margin-bottom:8px;}
+  button{background:#4f8cff; color:#fff; border:none; padding:10px 16px; border-radius:8px; cursor:pointer; font-weight:600;}
+  #qrcode{background:#fff; padding:16px; display:inline-block; margin-top:10px;}
+  video{width:100%; max-width:480px; background:#000;}
+  #log{background:#0d0f14; padding:10px; border-radius:8px; font-family:monospace; font-size:12px; height:160px; overflow-y:auto; white-space:pre-wrap; margin-top:10px;}
+  h2{font-size:16px;}
+</style>
+</head>
+<body>
+
+<div class="panel">
+  <h2>1. Generate (do this on device A)</h2>
+  <textarea id="txt" rows="2">hello world test 123</textarea>
+  <button onclick="gen()">Generate QR</button>
+  <div id="qrcode"></div>
+</div>
+
+<div class="panel">
+  <h2>2. Scan (do this on device B)</h2>
+  <button id="startBtn" onclick="startScan()">Start Camera</button>
+  <button id="stopBtn" onclick="stopScan()" disabled>Stop</button>
+  <video id="video" playsinline muted></video>
+  <canvas id="canvas" style="display:none;"></canvas>
+  <div><strong>Decoded result:</strong> <span id="result">(none yet)</span></div>
+  <div id="log"></div>
+</div>
+
+<script>
+function log(msg){
+  const l = document.getElementById('log');
+  const time = new Date().toLocaleTimeString();
+  l.textContent += `[${time}] ${msg}\n`;
+  l.scrollTop = l.scrollHeight;
+  console.log(msg);
+}
+
+function gen(){
+  document.getElementById('qrcode').innerHTML = '';
+  const text = document.getElementById('txt').value;
+  new QRCode(document.getElementById('qrcode'), { text, width: 260, height: 260 });
+  log('Generated QR for: ' + text);
+}
+
+let stream = null, raf = null, frameCount = 0;
+
+async function startScan(){
+  log('Requesting camera...');
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    log('Camera stream acquired.');
+  }catch(e){
+    log('ERROR getting camera: ' + e.name + ' - ' + e.message);
+    alert('Camera error: ' + e.message);
+    return;
+  }
+  const video = document.getElementById('video');
+  video.srcObject = stream;
+  await video.play();
+  log('Video playing. readyState=' + video.readyState);
+
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('stopBtn').disabled = false;
+  frameCount = 0;
+
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  function tick(){
+    if(video.readyState === video.HAVE_ENOUGH_DATA){
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(imageData.data, imageData.width, imageData.height);
+      frameCount++;
+      if(frameCount % 30 === 0){
+        log(`still scanning... (${frameCount} frames processed, video ${canvas.width}x${canvas.height})`);
+      }
+      if(code){
+        document.getElementById('result').textContent = code.data;
+        log('DECODED: ' + code.data);
+      }
+    }
+    raf = requestAnimationFrame(tick);
+  }
+  raf = requestAnimationFrame(tick);
+}
+
+function stopScan(){
+  if(raf) cancelAnimationFrame(raf);
+  raf = null;
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('stopBtn').disabled = true;
+  log('Stopped.');
+}
+</script>
+</body>
+</html>

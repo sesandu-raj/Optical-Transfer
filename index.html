@@ -1,350 +1,183 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Optical File Transfer — Prototype</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
-<style>
-  :root{
-    --bg:#0f1115; --panel:#171a21; --accent:#4f8cff; --accent2:#3ecf8e;
-    --text:#e7e9ee; --muted:#8b93a7; --border:#262b36; --danger:#ff5d5d;
-  }
-  *{box-sizing:border-box;}
-  body{
-    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-    background:var(--bg); color:var(--text); min-height:100vh; padding:24px;
-  }
-  .wrap{max-width:720px; margin:0 auto;}
-  h1{font-size:20px; font-weight:600; margin:0 0 4px;}
-  .sub{color:var(--muted); font-size:13px; margin-bottom:20px;}
-  .tabs{display:flex; gap:8px; margin-bottom:20px;}
-  .tab{
-    flex:1; padding:10px 14px; border-radius:10px; border:1px solid var(--border);
-    background:var(--panel); color:var(--muted); text-align:center; cursor:pointer;
-    font-size:14px; font-weight:600; transition:.15s;
-  }
-  .tab.active{background:var(--accent); color:#fff; border-color:var(--accent);}
-  .panel{
-    background:var(--panel); border:1px solid var(--border); border-radius:14px;
-    padding:20px; margin-bottom:16px;
-  }
-  .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px;}
-  label{font-size:13px; color:var(--muted); display:block; margin-bottom:6px;}
-  input[type=file], input[type=password], input[type=number]{
-    background:#0d0f14; border:1px solid var(--border); color:var(--text);
-    padding:8px 10px; border-radius:8px; font-size:13px; width:100%;
-  }
-  input[type=range]{width:100%;}
-  button{
-    background:var(--accent); color:#fff; border:none; padding:10px 16px;
-    border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;
-  }
-  button.secondary{background:#262b36; color:var(--text);}
-  button:disabled{opacity:.4; cursor:not-allowed;}
-  #qrStage{display:flex; justify-content:center; padding:20px; background:#fff; border-radius:12px; margin-top:12px;}
-  #videoStage{position:relative; border-radius:12px; overflow:hidden; background:#000;}
-  video{width:100%; display:block;}
-  .progress-wrap{background:#0d0f14; border-radius:8px; height:10px; overflow:hidden; margin-top:10px;}
-  .progress-bar{height:100%; background:var(--accent2); width:0%; transition:.2s;}
-  .stat{font-size:13px; color:var(--muted); margin-top:8px;}
-  .hint{font-size:12px; color:var(--muted); line-height:1.5; margin-top:10px;}
-  .hidden{display:none !important;}
-  a.dl{color:var(--accent2); font-weight:600;}
-  .badge{
-    display:inline-block; font-size:11px; padding:2px 8px; border-radius:20px;
-    background:#1e2430; color:var(--muted); margin-left:6px;
-  }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <h1>Optical File Transfer</h1>
-  <div class="sub">Send files between two devices using animated QR codes — no network, no login.</div>
-
-  <div class="tabs">
-    <div class="tab active" id="tabSend" onclick="switchTab('send')">Send</div>
-    <div class="tab" id="tabReceive" onclick="switchTab('receive')">Receive</div>
-  </div>
-
-  <!-- SEND PANEL -->
-  <div class="panel" id="sendPanel">
-    <div class="row">
-      <div style="flex:1; min-width:200px;">
-        <label>File to send</label>
-        <input type="file" id="fileInput">
-      </div>
-    </div>
-    <div class="row">
-      <div style="flex:1; min-width:150px;">
-        <label>Chunk size (bytes)</label>
-        <input type="number" id="chunkSize" value="900" min="200" max="1800">
-      </div>
-      <div style="flex:1; min-width:150px;">
-        <label>Frame delay (ms)</label>
-        <input type="number" id="frameDelay" value="180" min="80" max="1000">
-      </div>
-      <div style="flex:1; min-width:200px;">
-        <label>Optional passphrase (AES encryption)</label>
-        <input type="password" id="passphrase" placeholder="leave blank for no encryption">
-      </div>
-    </div>
-    <div class="row">
-      <button id="startSend" onclick="startSending()">Start Sending</button>
-      <button class="secondary" id="stopSend" onclick="stopSending()" disabled>Stop</button>
-    </div>
-    <div id="qrStage"><div id="qrcode"></div></div>
-    <div class="progress-wrap"><div class="progress-bar" id="sendProgress"></div></div>
-    <div class="stat" id="sendStat">Idle</div>
-    <div class="hint">Point the receiving phone's camera at this screen. The code loops continuously until you press Stop — the receiver will keep listening until every chunk has been seen at least once, regardless of order.</div>
-  </div>
-
-  <!-- RECEIVE PANEL -->
-  <div class="panel hidden" id="receivePanel">
-    <div class="row">
-      <div style="flex:1; min-width:200px;">
-        <label>Passphrase (only if sender used one)</label>
-        <input type="password" id="rxPassphrase">
-      </div>
-      <button id="startReceive" onclick="startReceiving()">Start Camera</button>
-      <button class="secondary" id="stopReceive" onclick="stopReceiving()" disabled>Stop</button>
-    </div>
-    <div id="videoStage">
-      <video id="video" playsinline muted></video>
-    </div>
-    <canvas id="canvas" class="hidden"></canvas>
-    <div class="progress-wrap"><div class="progress-bar" id="rxProgress"></div></div>
-    <div class="stat" id="rxStat">Idle</div>
-    <div id="downloadArea" class="stat"></div>
-    <div class="hint">Requires camera permission and a secure context (https, or localhost). Hold the phone steady, ~20–30cm from the screen, until the progress bar fills.</div>
-  </div>
-</div>
-
-<script>
-// ---------- shared helpers ----------
-function switchTab(which){
-  document.getElementById('tabSend').classList.toggle('active', which==='send');
-  document.getElementById('tabReceive').classList.toggle('active', which==='receive');
-  document.getElementById('sendPanel').classList.toggle('hidden', which!=='send');
-  document.getElementById('receivePanel').classList.toggle('hidden', which!=='receive');
-}
-
-function u8ToB64(u8){
-  let binary = '';
-  const chunkSize = 0x8000;
-  for(let i=0;i<u8.length;i+=chunkSize){
-    binary += String.fromCharCode.apply(null, u8.subarray(i, i+chunkSize));
-  }
-  return btoa(binary);
-}
-function b64ToU8(b64){
-  const binary = atob(b64);
-  const u8 = new Uint8Array(binary.length);
-  for(let i=0;i<binary.length;i++) u8[i] = binary.charCodeAt(i);
-  return u8;
-}
-
-async function deriveKey(passphrase, salt){
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey(
-    {name:'PBKDF2', salt, iterations:150000, hash:'SHA-256'},
-    keyMaterial, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']
-  );
-}
-
-// ---------- SENDER ----------
-let sendTimer = null;
-let sendFrames = [];
-let sendIdx = 0;
-
-async function startSending(){
-  const fileInput = document.getElementById('fileInput');
-  if(!fileInput.files.length){ alert('Choose a file first'); return; }
-  const file = fileInput.files[0];
-  const chunkSize = parseInt(document.getElementById('chunkSize').value, 10);
-  const delay = parseInt(document.getElementById('frameDelay').value, 10);
-  const passphrase = document.getElementById('passphrase').value;
-
-  document.getElementById('startSend').disabled = true;
-  document.getElementById('stopSend').disabled = false;
-  document.getElementById('sendStat').textContent = 'Preparing file...';
-
-  let buf = new Uint8Array(await file.arrayBuffer());
-  let encrypted = false;
-  let saltB64 = '', ivB64 = '';
-
-  if(passphrase){
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const key = await deriveKey(passphrase, salt);
-    const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, key, buf);
-    buf = new Uint8Array(ct);
-    encrypted = true;
-    saltB64 = u8ToB64(salt);
-    ivB64 = u8ToB64(iv);
-  }
-
-  const fileId = Math.random().toString(36).slice(2, 8);
-  const total = Math.ceil(buf.length / chunkSize);
-  sendFrames = [];
-
-  // frame 0 style header carries metadata on every chunk (simple + robust for MVP)
-  for(let i=0;i<total;i++){
-    const slice = buf.subarray(i*chunkSize, Math.min((i+1)*chunkSize, buf.length));
-    const meta = {
-      id: fileId, i, n: total, name: file.name, type: file.type || 'application/octet-stream',
-      enc: encrypted, salt: saltB64, iv: ivB64
-    };
-    const header = JSON.stringify(meta);
-    const payload = header + '|' + u8ToB64(slice);
-    sendFrames.push(payload);
-  }
-
-  sendIdx = 0;
-  document.getElementById('qrcode').innerHTML = '';
-  const qr = new QRCode(document.getElementById('qrcode'), {
-    text: sendFrames[0], width: 320, height: 320, correctLevel: QRCode.CorrectLevel.L
-  });
-
-  document.getElementById('sendStat').textContent = `Sending ${total} frame(s)...`;
-
-  sendTimer = setInterval(()=>{
-    sendIdx = (sendIdx + 1) % sendFrames.length;
-    document.getElementById('qrcode').innerHTML = '';
-    new QRCode(document.getElementById('qrcode'), {
-      text: sendFrames[sendIdx], width: 320, height: 320, correctLevel: QRCode.CorrectLevel.L
-    });
-    const pct = Math.round(((sendIdx+1)/sendFrames.length)*100);
-    document.getElementById('sendProgress').style.width = pct + '%';
-    document.getElementById('sendStat').textContent = `Frame ${sendIdx+1} / ${sendFrames.length} (looping)`;
-  }, delay);
-}
-
-function stopSending(){
-  clearInterval(sendTimer);
-  sendTimer = null;
-  document.getElementById('startSend').disabled = false;
-  document.getElementById('stopSend').disabled = true;
-  document.getElementById('sendStat').textContent = 'Stopped';
-}
-
-// ---------- RECEIVER ----------
-let rxStream = null;
-let rxRAF = null;
-let rxChunks = new Map();
-let rxMeta = null;
-
-async function startReceiving(){
-  const video = document.getElementById('video');
-  const canvas = document.getElementById('canvas');
-  try{
-    rxStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-  }catch(e){
-    alert('Camera access failed: ' + e.message + '\n(Needs https or localhost, and camera permission.)');
-    return;
-  }
-  video.srcObject = rxStream;
-  await video.play();
-
-  document.getElementById('startReceive').disabled = true;
-  document.getElementById('stopReceive').disabled = false;
-  document.getElementById('rxStat').textContent = 'Scanning...';
-  rxChunks = new Map();
-  rxMeta = null;
-  document.getElementById('downloadArea').innerHTML = '';
-  document.getElementById('rxProgress').style.width = '0%';
-
-  const ctx = canvas.getContext('2d');
-
-  function tick(){
-    if(video.readyState === video.HAVE_ENOUGH_DATA){
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code = jsQR(imageData.data, imageData.width, imageData.height);
-      if(code){
-        handleDecoded(code.data);
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QR Test — Static Text</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+    <style>
+      body {
+        font-family: -apple-system, sans-serif;
+        background: #0f1115;
+        color: #e7e9ee;
+        padding: 20px;
       }
-    }
-    rxRAF = requestAnimationFrame(tick);
-  }
-  rxRAF = requestAnimationFrame(tick);
-}
+      .panel {
+        background: #171a21;
+        border: 1px solid #262b36;
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+        max-width: 480px;
+      }
+      input,
+      textarea {
+        width: 100%;
+        padding: 8px;
+        border-radius: 6px;
+        border: 1px solid #262b36;
+        background: #0d0f14;
+        color: #fff;
+        margin-bottom: 8px;
+      }
+      button {
+        background: #4f8cff;
+        color: #fff;
+        border: none;
+        padding: 10px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      #qrcode {
+        background: #fff;
+        padding: 16px;
+        display: inline-block;
+        margin-top: 10px;
+      }
+      video {
+        width: 100%;
+        max-width: 480px;
+        background: #000;
+      }
+      #log {
+        background: #0d0f14;
+        padding: 10px;
+        border-radius: 8px;
+        font-family: monospace;
+        font-size: 12px;
+        height: 160px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        margin-top: 10px;
+      }
+      h2 {
+        font-size: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <h2>1. Generate (do this on device A)</h2>
+      <textarea id="txt" rows="2">hello world test 123</textarea>
+      <button onclick="gen()">Generate QR</button>
+      <div id="qrcode"></div>
+    </div>
 
-async function handleDecoded(text){
-  const sep = text.indexOf('|');
-  if(sep === -1) return;
-  let meta;
-  try{ meta = JSON.parse(text.slice(0, sep)); }catch(e){ return; }
-  const b64 = text.slice(sep+1);
+    <div class="panel">
+      <h2>2. Scan (do this on device B)</h2>
+      <button id="startBtn" onclick="startScan()">Start Camera</button>
+      <button id="stopBtn" onclick="stopScan()" disabled>Stop</button>
+      <video id="video" playsinline muted></video>
+      <canvas id="canvas" style="display: none"></canvas>
+      <div>
+        <strong>Decoded result:</strong> <span id="result">(none yet)</span>
+      </div>
+      <div id="log"></div>
+    </div>
 
-  if(!rxMeta) rxMeta = meta;
-  if(rxMeta.id !== meta.id) return; // ignore frames from a different transfer
+    <script>
+      function log(msg) {
+        const l = document.getElementById("log");
+        const time = new Date().toLocaleTimeString();
+        l.textContent += `[${time}] ${msg}\n`;
+        l.scrollTop = l.scrollHeight;
+        console.log(msg);
+      }
 
-  if(!rxChunks.has(meta.i)){
-    rxChunks.set(meta.i, b64ToU8(b64));
-  }
+      function gen() {
+        document.getElementById("qrcode").innerHTML = "";
+        const text = document.getElementById("txt").value;
+        new QRCode(document.getElementById("qrcode"), {
+          text,
+          width: 260,
+          height: 260,
+        });
+        log("Generated QR for: " + text);
+      }
 
-  const pct = Math.round((rxChunks.size / meta.n) * 100);
-  document.getElementById('rxProgress').style.width = pct + '%';
-  document.getElementById('rxStat').textContent = `Received ${rxChunks.size} / ${meta.n} chunks`;
+      let stream = null,
+        raf = null,
+        frameCount = 0;
 
-  if(rxChunks.size === meta.n){
-    await finishReceiving(meta);
-  }
-}
+      async function startScan() {
+        log("Requesting camera...");
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment" },
+          });
+          log("Camera stream acquired.");
+        } catch (e) {
+          log("ERROR getting camera: " + e.name + " - " + e.message);
+          alert("Camera error: " + e.message);
+          return;
+        }
+        const video = document.getElementById("video");
+        video.srcObject = stream;
+        await video.play();
+        log("Video playing. readyState=" + video.readyState);
 
-async function finishReceiving(meta){
-  stopReceiving();
-  document.getElementById('rxStat').textContent = 'Reassembling...';
+        document.getElementById("startBtn").disabled = true;
+        document.getElementById("stopBtn").disabled = false;
+        frameCount = 0;
 
-  let total = 0;
-  for(let i=0;i<meta.n;i++) total += rxChunks.get(i).length;
-  let full = new Uint8Array(total);
-  let offset = 0;
-  for(let i=0;i<meta.n;i++){
-    full.set(rxChunks.get(i), offset);
-    offset += rxChunks.get(i).length;
-  }
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
-  if(meta.enc){
-    const passphrase = document.getElementById('rxPassphrase').value;
-    if(!passphrase){
-      document.getElementById('rxStat').textContent = 'File is encrypted — enter the passphrase and try again.';
-      return;
-    }
-    try{
-      const salt = b64ToU8(meta.salt);
-      const iv = b64ToU8(meta.iv);
-      const key = await deriveKey(passphrase, salt);
-      const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, full);
-      full = new Uint8Array(pt);
-    }catch(e){
-      document.getElementById('rxStat').textContent = 'Decryption failed — wrong passphrase?';
-      return;
-    }
-  }
+        function tick() {
+          if (video.readyState === video.HAVE_ENOUGH_DATA) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = ctx.getImageData(
+              0,
+              0,
+              canvas.width,
+              canvas.height,
+            );
+            const code = jsQR(
+              imageData.data,
+              imageData.width,
+              imageData.height,
+            );
+            frameCount++;
+            if (frameCount % 30 === 0) {
+              log(
+                `still scanning... (${frameCount} frames processed, video ${canvas.width}x${canvas.height})`,
+              );
+            }
+            if (code) {
+              document.getElementById("result").textContent = code.data;
+              log("DECODED: " + code.data);
+            }
+          }
+          raf = requestAnimationFrame(tick);
+        }
+        raf = requestAnimationFrame(tick);
+      }
 
-  const blob = new Blob([full], {type: meta.type});
-  const url = URL.createObjectURL(blob);
-  document.getElementById('rxStat').textContent = `Done — ${meta.name}`;
-  document.getElementById('downloadArea').innerHTML =
-    `<a class="dl" href="${url}" download="${meta.name}">Download ${meta.name}</a>`;
-}
-
-function stopReceiving(){
-  if(rxRAF) cancelAnimationFrame(rxRAF);
-  rxRAF = null;
-  if(rxStream){
-    rxStream.getTracks().forEach(t=>t.stop());
-    rxStream = null;
-  }
-  document.getElementById('startReceive').disabled = false;
-  document.getElementById('stopReceive').disabled = true;
-}
-</script>
-</body>
+      function stopScan() {
+        if (raf) cancelAnimationFrame(raf);
+        raf = null;
+        if (stream) {
+          stream.getTracks().forEach((t) => t.stop());
+          stream = null;
+        }
+        document.getElementById("startBtn").disabled = false;
+        document.getElementById("stopBtn").disabled = true;
+        log("Stopped.");
+      }
+    </script>
+  </body>
 </html>
