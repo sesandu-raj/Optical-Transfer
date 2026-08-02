@@ -126,6 +126,11 @@
         border-radius: 12px;
         margin-top: 12px;
       }
+      #qrStage canvas {
+        max-width: 100%;
+        height: auto;
+        image-rendering: pixelated;
+      }
       #videoStage {
         position: relative;
         border-radius: 12px;
@@ -209,10 +214,14 @@
             <input
               type="number"
               id="chunkSize"
-              value="500"
-              min="100"
+              value="160"
+              min="60"
               max="1800"
             />
+            <div style="font-size: 11px; color: var(--muted); margin-top: 2px">
+              Auto-lowered for larger grids — smaller = easier for camera to
+              resolve each cell.
+            </div>
           </div>
           <div style="flex: 1; min-width: 150px">
             <label>Frame delay (ms)</label>
@@ -234,7 +243,7 @@
           </div>
           <div style="flex: 1; min-width: 150px">
             <label>Grid size (must match receiver)</label>
-            <select id="gridSize">
+            <select id="gridSize" onchange="onGridSizeChange()">
               <option value="1">1×1 (baseline)</option>
               <option value="2">2×2 (~4x throughput)</option>
               <option value="3" selected>3×3 (~9x throughput)</option>
@@ -342,6 +351,15 @@
         document
           .getElementById("receivePanel")
           .classList.toggle("hidden", which !== "receive");
+      }
+
+      // Denser payloads need more QR modules, which shrink below reliable camera resolution once
+      // packed into a smaller grid cell — so scale chunk size down as grid size goes up.
+      const RECOMMENDED_CHUNK_SIZE = { 1: 500, 2: 260, 3: 160, 4: 100 };
+      function onGridSizeChange() {
+        const gridDim = parseInt(document.getElementById("gridSize").value, 10);
+        document.getElementById("chunkSize").value =
+          RECOMMENDED_CHUNK_SIZE[gridDim];
       }
 
       function u8ToB64(u8) {
@@ -457,7 +475,7 @@
       let sendFrameCanvases = [];
       let sendIdx = 0;
 
-      async function prerenderFrames() {
+      async function prerenderFrames(renderSize) {
         document.getElementById("prerenderStat").textContent =
           `Pre-rendering ${sendFrames.length} QR frame(s)...`;
         sendFrameCanvases = [];
@@ -469,15 +487,17 @@
           tempContainer.innerHTML = "";
           new QRCode(tempContainer, {
             text: sendFrames[i],
-            width: 320,
-            height: 320,
+            width: renderSize,
+            height: renderSize,
             correctLevel: QRCode.CorrectLevel.L,
           });
           const srcCanvas = tempContainer.querySelector("canvas");
           const clone = document.createElement("canvas");
-          clone.width = 320;
-          clone.height = 320;
-          clone.getContext("2d").drawImage(srcCanvas, 0, 0, 320, 320);
+          clone.width = renderSize;
+          clone.height = renderSize;
+          clone
+            .getContext("2d")
+            .drawImage(srcCanvas, 0, 0, renderSize, renderSize);
           sendFrameCanvases.push(clone);
 
           // yield to the UI thread periodically so the tab doesn't freeze on big files
@@ -564,10 +584,11 @@
           sendFrames.push(header + "|" + u8ToB64(payload));
         }
 
-        await prerenderFrames();
-
         const gridDim = parseInt(document.getElementById("gridSize").value, 10);
-        const cellSize = 260;
+        const cellSize = 300;
+
+        await prerenderFrames(cellSize);
+
         const displayCanvas = document.getElementById("qrDisplay");
         displayCanvas.width = cellSize * gridDim;
         displayCanvas.height = cellSize * gridDim;
