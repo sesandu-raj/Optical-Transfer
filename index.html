@@ -126,11 +126,6 @@
         border-radius: 12px;
         margin-top: 12px;
       }
-      #qrStage canvas {
-        max-width: 100%;
-        height: auto;
-        image-rendering: pixelated;
-      }
       #videoStage {
         position: relative;
         border-radius: 12px;
@@ -214,21 +209,17 @@
             <input
               type="number"
               id="chunkSize"
-              value="160"
-              min="60"
+              value="400"
+              min="100"
               max="1800"
             />
-            <div style="font-size: 11px; color: var(--muted); margin-top: 2px">
-              Auto-lowered for larger grids — smaller = easier for camera to
-              resolve each cell.
-            </div>
           </div>
           <div style="flex: 1; min-width: 150px">
             <label>Frame delay (ms)</label>
             <input
               type="number"
               id="frameDelay"
-              value="250"
+              value="500"
               min="80"
               max="2000"
             />
@@ -240,15 +231,6 @@
               id="passphrase"
               placeholder="leave blank for no encryption"
             />
-          </div>
-          <div style="flex: 1; min-width: 150px">
-            <label>Grid size (must match receiver)</label>
-            <select id="gridSize" onchange="onGridSizeChange()">
-              <option value="1">1×1 (baseline)</option>
-              <option value="2">2×2 (~4x throughput)</option>
-              <option value="3" selected>3×3 (~9x throughput)</option>
-              <option value="4">4×4 (~16x throughput)</option>
-            </select>
           </div>
         </div>
         <div class="row">
@@ -262,14 +244,11 @@
             Stop
           </button>
         </div>
-        <div id="qrStage">
-          <canvas id="qrDisplay" width="320" height="320"></canvas>
-        </div>
+        <div id="qrStage"><div id="qrcode"></div></div>
         <div class="progress-wrap">
           <div class="progress-bar" id="sendProgress"></div>
         </div>
         <div class="stat" id="sendStat">Idle</div>
-        <div class="stat" id="prerenderStat"></div>
         <div class="hint">
           Point the receiving phone's camera at this screen. The code loops
           continuously until you press Stop — the receiver will keep listening
@@ -283,15 +262,6 @@
           <div style="flex: 1; min-width: 200px">
             <label>Passphrase (only if sender used one)</label>
             <input type="password" id="rxPassphrase" />
-          </div>
-          <div style="flex: 1; min-width: 150px">
-            <label>Grid size (must match sender)</label>
-            <select id="rxGridSize">
-              <option value="1">1×1 (baseline)</option>
-              <option value="2">2×2</option>
-              <option value="3" selected>3×3</option>
-              <option value="4">4×4</option>
-            </select>
           </div>
           <button id="startReceive" onclick="startReceiving()">
             Start Camera
@@ -353,15 +323,6 @@
           .classList.toggle("hidden", which !== "receive");
       }
 
-      // Denser payloads need more QR modules, which shrink below reliable camera resolution once
-      // packed into a smaller grid cell — so scale chunk size down as grid size goes up.
-      const RECOMMENDED_CHUNK_SIZE = { 1: 500, 2: 260, 3: 160, 4: 100 };
-      function onGridSizeChange() {
-        const gridDim = parseInt(document.getElementById("gridSize").value, 10);
-        document.getElementById("chunkSize").value =
-          RECOMMENDED_CHUNK_SIZE[gridDim];
-      }
-
       function u8ToB64(u8) {
         let binary = "";
         const chunkSize = 0x8000;
@@ -398,68 +359,6 @@
         );
       }
 
-      // ---------- FOUNTAIN CODE HELPERS (shared by sender + receiver) ----------
-      // Deterministic PRNG so sender and receiver derive the same block indices from the same frame number.
-      function mulberry32(seed) {
-        let a = seed >>> 0;
-        return function () {
-          a |= 0;
-          a = (a + 0x6d2b79f5) | 0;
-          let t = Math.imul(a ^ (a >>> 15), 1 | a);
-          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-        };
-      }
-
-      // Frame t < k: systematic (raw block t). Frame t >= k: repair packet = XOR of a small
-      // deterministic set of blocks, chosen from a seed derived from t so both sides agree.
-      function getFrameIndices(t, k) {
-        if (t < k) return [t];
-        const rand = mulberry32((t * 2654435761 + k) >>> 0);
-        const maxDeg = Math.min(3, k);
-        const degree = maxDeg < 2 ? 1 : 2 + Math.floor(rand() * (maxDeg - 1));
-        const idxSet = new Set();
-        while (idxSet.size < degree) idxSet.add(Math.floor(rand() * k));
-        return Array.from(idxSet);
-      }
-
-      function xorBytes(a, b) {
-        const out = new Uint8Array(a.length);
-        for (let i = 0; i < a.length; i++) out[i] = a[i] ^ b[i];
-        return out;
-      }
-
-      // ---------- GF(2) LINEAR ALGEBRA (bit-vector basis) ----------
-      // Each received frame is one linear equation over the unknown blocks: XOR(selected blocks) = payload.
-      // We maintain a row-echelon basis; once we have k independent equations (rank == k), every
-      // block is solvable — this always succeeds eventually, unlike simple peeling which can stall.
-      function bvNew(k) {
-        return new Uint32Array(Math.ceil(k / 32));
-      }
-      function bvSet(bv, i) {
-        bv[i >>> 5] |= 1 << (i & 31);
-      }
-      function bvGet(bv, i) {
-        return (bv[i >>> 5] >>> (i & 31)) & 1;
-      }
-      function bvXor(a, b) {
-        for (let i = 0; i < a.length; i++) a[i] ^= b[i];
-        return a;
-      }
-      function bvIsZero(bv) {
-        for (let i = 0; i < bv.length; i++) if (bv[i] !== 0) return false;
-        return true;
-      }
-      function bvHighestBit(bv) {
-        for (let w = bv.length - 1; w >= 0; w--) {
-          if (bv[w] !== 0) {
-            const clz = Math.clz32(bv[w]);
-            return w * 32 + (31 - clz);
-          }
-        }
-        return -1;
-      }
-
       function rxLog(msg) {
         const l = document.getElementById("rxLog");
         if (!l) return;
@@ -472,45 +371,7 @@
       // ---------- SENDER ----------
       let sendTimer = null;
       let sendFrames = [];
-      let sendFrameCanvases = [];
       let sendIdx = 0;
-
-      async function prerenderFrames(renderSize) {
-        document.getElementById("prerenderStat").textContent =
-          `Pre-rendering ${sendFrames.length} QR frame(s)...`;
-        sendFrameCanvases = [];
-        const tempContainer = document.createElement("div");
-        tempContainer.style.display = "none";
-        document.body.appendChild(tempContainer);
-
-        for (let i = 0; i < sendFrames.length; i++) {
-          tempContainer.innerHTML = "";
-          new QRCode(tempContainer, {
-            text: sendFrames[i],
-            width: renderSize,
-            height: renderSize,
-            correctLevel: QRCode.CorrectLevel.L,
-          });
-          const srcCanvas = tempContainer.querySelector("canvas");
-          const clone = document.createElement("canvas");
-          clone.width = renderSize;
-          clone.height = renderSize;
-          clone
-            .getContext("2d")
-            .drawImage(srcCanvas, 0, 0, renderSize, renderSize);
-          sendFrameCanvases.push(clone);
-
-          // yield to the UI thread periodically so the tab doesn't freeze on big files
-          if (i % 15 === 0) {
-            document.getElementById("prerenderStat").textContent =
-              `Pre-rendering ${i + 1}/${sendFrames.length}...`;
-            await new Promise((r) => requestAnimationFrame(r));
-          }
-        }
-        document.body.removeChild(tempContainer);
-        document.getElementById("prerenderStat").textContent =
-          `Ready — ${sendFrameCanvases.length} frame(s) pre-rendered.`;
-      }
 
       async function startSending() {
         const fileInput = document.getElementById("fileInput");
@@ -551,29 +412,19 @@
         }
 
         const fileId = Math.random().toString(36).slice(2, 8);
-        const totalBytes = buf.length;
-        const k = Math.max(1, Math.ceil(totalBytes / chunkSize));
-        const padded = new Uint8Array(k * chunkSize);
-        padded.set(buf);
-        const blocks = [];
-        for (let i = 0; i < k; i++)
-          blocks.push(padded.subarray(i * chunkSize, (i + 1) * chunkSize));
-
-        const repairCount = k <= 2 ? 0 : Math.max(4, Math.ceil(k * 0.5));
-        const totalFrames = k + repairCount;
+        const total = Math.ceil(buf.length / chunkSize);
         sendFrames = [];
 
-        for (let t = 0; t < totalFrames; t++) {
-          const idxs = getFrameIndices(t, k);
-          let payload = blocks[idxs[0]];
-          for (let j = 1; j < idxs.length; j++)
-            payload = xorBytes(payload, blocks[idxs[j]]);
+        // frame 0 style header carries metadata on every chunk (simple + robust for MVP)
+        for (let i = 0; i < total; i++) {
+          const slice = buf.subarray(
+            i * chunkSize,
+            Math.min((i + 1) * chunkSize, buf.length),
+          );
           const meta = {
             id: fileId,
-            k,
-            t,
-            chunkSize,
-            totalBytes,
+            i,
+            n: total,
             name: file.name,
             type: file.type || "application/octet-stream",
             enc: encrypted,
@@ -581,51 +432,35 @@
             iv: ivB64,
           };
           const header = JSON.stringify(meta);
-          sendFrames.push(header + "|" + u8ToB64(payload));
+          const payload = header + "|" + u8ToB64(slice);
+          sendFrames.push(payload);
         }
 
-        const gridDim = parseInt(document.getElementById("gridSize").value, 10);
-        const cellSize = 300;
-
-        await prerenderFrames(cellSize);
-
-        const displayCanvas = document.getElementById("qrDisplay");
-        displayCanvas.width = cellSize * gridDim;
-        displayCanvas.height = cellSize * gridDim;
-        const displayCtx = displayCanvas.getContext("2d");
-
-        const G = gridDim * gridDim;
-        let tick = 0;
-
-        function drawGrid() {
-          displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
-          for (let cell = 0; cell < G; cell++) {
-            const frameIdx = (tick * G + cell) % sendFrameCanvases.length;
-            const col = cell % gridDim,
-              row = Math.floor(cell / gridDim);
-            displayCtx.drawImage(
-              sendFrameCanvases[frameIdx],
-              col * cellSize,
-              row * cellSize,
-              cellSize,
-              cellSize,
-            );
-          }
-        }
-        drawGrid();
+        sendIdx = 0;
+        document.getElementById("qrcode").innerHTML = "";
+        const qr = new QRCode(document.getElementById("qrcode"), {
+          text: sendFrames[0],
+          width: 320,
+          height: 320,
+          correctLevel: QRCode.CorrectLevel.L,
+        });
 
         document.getElementById("sendStat").textContent =
-          `Sending ${totalFrames} frame(s) (${k} data blocks + ${repairCount} repair) via ${gridDim}×${gridDim} grid...`;
+          `Sending ${total} frame(s)...`;
 
         sendTimer = setInterval(() => {
-          tick++;
-          drawGrid();
-          const framesShown = Math.min(tick * G, sendFrameCanvases.length);
-          const pct =
-            Math.round((framesShown / sendFrameCanvases.length) * 100) % 100;
+          sendIdx = (sendIdx + 1) % sendFrames.length;
+          document.getElementById("qrcode").innerHTML = "";
+          new QRCode(document.getElementById("qrcode"), {
+            text: sendFrames[sendIdx],
+            width: 320,
+            height: 320,
+            correctLevel: QRCode.CorrectLevel.L,
+          });
+          const pct = Math.round(((sendIdx + 1) / sendFrames.length) * 100);
           document.getElementById("sendProgress").style.width = pct + "%";
           document.getElementById("sendStat").textContent =
-            `Tick ${tick} — showing ${G} frames/tick (looping)`;
+            `Frame ${sendIdx + 1} / ${sendFrames.length} (looping)`;
         }, delay);
       }
 
@@ -640,10 +475,8 @@
       // ---------- RECEIVER ----------
       let rxStream = null;
       let rxRAF = null;
+      let rxChunks = new Map();
       let rxMeta = null;
-      let rxBasis = null; // array length k: null or {mask: Uint32Array, data: Uint8Array}
-      let rxRank = 0;
-      let rxSeenFrames = null;
 
       async function startReceiving() {
         if (typeof jsQR === "undefined") {
@@ -652,26 +485,11 @@
           alert("jsQR did not load. Check your internet connection.");
           return;
         }
-        const gridDim = parseInt(
-          document.getElementById("rxGridSize").value,
-          10,
-        );
         const video = document.getElementById("video");
         const canvas = document.getElementById("canvas");
         try {
           rxStream = await navigator.mediaDevices.getUserMedia({
-            video:
-              gridDim > 1
-                ? {
-                    facingMode: "environment",
-                    width: { ideal: 1280 },
-                    height: { ideal: 960 },
-                  }
-                : {
-                    facingMode: "environment",
-                    width: { ideal: 640 },
-                    height: { ideal: 480 },
-                  },
+            video: { facingMode: "environment" },
           });
         } catch (e) {
           alert(
@@ -694,91 +512,40 @@
             "x" +
             video.videoHeight,
         );
+        rxChunks = new Map();
         rxMeta = null;
-        rxBasis = null;
-        rxRank = 0;
-        rxSeenFrames = new Set();
         document.getElementById("downloadArea").innerHTML = "";
         document.getElementById("rxProgress").style.width = "0%";
 
-        rxLog(`grid mode: ${gridDim}×${gridDim} (must match sender's setting)`);
-
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         let frameCount = 0;
-        let decodedThisFrame = 0;
         let lastFrameLoggedAt = Date.now();
 
         function tick() {
           if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            const maxDim = gridDim > 1 ? 1280 : 640;
-            const scale = Math.min(
-              1,
-              maxDim / Math.max(video.videoWidth, video.videoHeight),
-            );
-            canvas.width = Math.round(video.videoWidth * scale);
-            canvas.height = Math.round(video.videoHeight * scale);
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = ctx.getImageData(
+              0,
+              0,
+              canvas.width,
+              canvas.height,
+            );
+            const code = jsQR(
+              imageData.data,
+              imageData.width,
+              imageData.height,
+            );
             frameCount++;
-            decodedThisFrame = 0;
-
-            if (gridDim === 1) {
-              const imageData = ctx.getImageData(
-                0,
-                0,
-                canvas.width,
-                canvas.height,
-              );
-              const code = jsQR(
-                imageData.data,
-                imageData.width,
-                imageData.height,
-                { inversionAttempts: "dontInvert" },
-              );
-              if (code) {
-                handleDecoded(code.data);
-                decodedThisFrame++;
-              }
-            } else {
-              // Crop into overlapping tiles so each individual QR's finder patterns land fully within
-              // at least one tile, even if the camera isn't perfectly aligned to the sender's grid.
-              const tileW = canvas.width / gridDim,
-                tileH = canvas.height / gridDim;
-              const overlap = 0.12;
-              for (let r = 0; r < gridDim; r++) {
-                for (let c = 0; c < gridDim; c++) {
-                  const x0 = Math.max(
-                    0,
-                    Math.floor(c * tileW - tileW * overlap),
-                  );
-                  const y0 = Math.max(
-                    0,
-                    Math.floor(r * tileH - tileH * overlap),
-                  );
-                  const x1 = Math.min(
-                    canvas.width,
-                    Math.ceil((c + 1) * tileW + tileW * overlap),
-                  );
-                  const y1 = Math.min(
-                    canvas.height,
-                    Math.ceil((r + 1) * tileH + tileH * overlap),
-                  );
-                  const tile = ctx.getImageData(x0, y0, x1 - x0, y1 - y0);
-                  const code = jsQR(tile.data, tile.width, tile.height, {
-                    inversionAttempts: "dontInvert",
-                  });
-                  if (code) {
-                    handleDecoded(code.data);
-                    decodedThisFrame++;
-                  }
-                }
-              }
-            }
-
             if (Date.now() - lastFrameLoggedAt > 2000) {
               rxLog(
-                `scanning... (${frameCount} camera frames, last frame decoded ${decodedThisFrame} code(s), rank ${rxRank}/${rxMeta ? rxMeta.k : "?"}, res ${canvas.width}x${canvas.height})`,
+                `scanning... (${frameCount} frames so far, ${rxChunks.size}/${rxMeta ? rxMeta.n : "?"} chunks, res ${canvas.width}x${canvas.height})`,
               );
               lastFrameLoggedAt = Date.now();
+            }
+            if (code) {
+              handleDecoded(code.data);
             }
           }
           rxRAF = requestAnimationFrame(tick);
@@ -805,86 +572,44 @@
 
         if (!rxMeta) {
           rxMeta = meta;
-          rxBasis = new Array(meta.k).fill(null);
-          rxRank = 0;
           rxLog(
-            `locked onto transfer id=${meta.id}, k=${meta.k} blocks, file="${meta.name}"`,
+            `locked onto transfer id=${meta.id}, ${meta.n} total chunks, file="${meta.name}"`,
           );
         }
         if (rxMeta.id !== meta.id) {
           rxLog(`ignoring frame from a different transfer id (${meta.id})`);
           return;
         }
-        if (rxSeenFrames.has(meta.t)) return; // already processed this exact frame number
-        rxSeenFrames.add(meta.t);
 
-        const indices = getFrameIndices(meta.t, meta.k);
-        const mask = bvNew(meta.k);
-        for (const idx of indices) bvSet(mask, idx);
-        let data = b64ToU8(b64);
+        if (!rxChunks.has(meta.i)) {
+          rxChunks.set(meta.i, b64ToU8(b64));
+          rxLog(`got chunk ${meta.i} (${rxChunks.size}/${meta.n})`);
+        }
 
-        const added = insertEquation(mask, data);
-        if (added)
-          rxLog(
-            `new independent equation from frame ${meta.t} (rank ${rxRank}/${rxMeta.k})`,
-          );
-
-        const pct = Math.round((rxRank / rxMeta.k) * 100);
+        const pct = Math.round((rxChunks.size / meta.n) * 100);
         document.getElementById("rxProgress").style.width = pct + "%";
         document.getElementById("rxStat").textContent =
-          `Rank ${rxRank} / ${rxMeta.k} (frame ${meta.t})`;
+          `Received ${rxChunks.size} / ${meta.n} chunks`;
 
-        if (rxRank === rxMeta.k) {
-          await finishReceiving();
+        if (rxChunks.size === meta.n) {
+          await finishReceiving(meta);
         }
       }
 
-      // Insert one equation (mask of involved blocks, XOR payload) into the row-echelon basis.
-      // Returns true if it added new information (advanced the rank), false if it was redundant.
-      function insertEquation(mask, data) {
-        let m = mask;
-        while (!bvIsZero(m)) {
-          const hi = bvHighestBit(m);
-          if (rxBasis[hi]) {
-            m = bvXor(m.slice(), rxBasis[hi].mask);
-            data = xorBytes(data, rxBasis[hi].data);
-          } else {
-            rxBasis[hi] = { mask: m, data };
-            rxRank++;
-            return true;
-          }
-        }
-        return false;
-      }
-
-      // Once rank == k, reduce the basis (ascending) so each row collapses to exactly one block's value.
-      function extractSolvedBlocks(k) {
-        for (let i = 0; i < k; i++) {
-          const row = rxBasis[i];
-          for (let j = 0; j < i; j++) {
-            if (bvGet(row.mask, j)) {
-              bvXor(row.mask, rxBasis[j].mask);
-              row.data = xorBytes(row.data, rxBasis[j].data);
-            }
-          }
-        }
-        const blocks = [];
-        for (let i = 0; i < k; i++) blocks.push(rxBasis[i].data);
-        return blocks;
-      }
-
-      async function finishReceiving() {
+      async function finishReceiving(meta) {
         stopReceiving();
         document.getElementById("rxStat").textContent = "Reassembling...";
 
-        const solvedBlocks = extractSolvedBlocks(rxMeta.k);
-        let full = new Uint8Array(rxMeta.k * rxMeta.chunkSize);
-        for (let i = 0; i < rxMeta.k; i++) {
-          full.set(solvedBlocks[i], i * rxMeta.chunkSize);
+        let total = 0;
+        for (let i = 0; i < meta.n; i++) total += rxChunks.get(i).length;
+        let full = new Uint8Array(total);
+        let offset = 0;
+        for (let i = 0; i < meta.n; i++) {
+          full.set(rxChunks.get(i), offset);
+          offset += rxChunks.get(i).length;
         }
-        full = full.slice(0, rxMeta.totalBytes);
 
-        if (rxMeta.enc) {
+        if (meta.enc) {
           const passphrase = document.getElementById("rxPassphrase").value;
           if (!passphrase) {
             document.getElementById("rxStat").textContent =
@@ -892,8 +617,8 @@
             return;
           }
           try {
-            const salt = b64ToU8(rxMeta.salt);
-            const iv = b64ToU8(rxMeta.iv);
+            const salt = b64ToU8(meta.salt);
+            const iv = b64ToU8(meta.iv);
             const key = await deriveKey(passphrase, salt);
             const pt = await crypto.subtle.decrypt(
               { name: "AES-GCM", iv },
@@ -908,11 +633,11 @@
           }
         }
 
-        const blob = new Blob([full], { type: rxMeta.type });
+        const blob = new Blob([full], { type: meta.type });
         const url = URL.createObjectURL(blob);
-        document.getElementById("rxStat").textContent = `Done — ${rxMeta.name}`;
+        document.getElementById("rxStat").textContent = `Done — ${meta.name}`;
         document.getElementById("downloadArea").innerHTML =
-          `<a class="dl" href="${url}" download="${rxMeta.name}">Download ${rxMeta.name}</a>`;
+          `<a class="dl" href="${url}" download="${meta.name}">Download ${meta.name}</a>`;
       }
 
       function stopReceiving() {
